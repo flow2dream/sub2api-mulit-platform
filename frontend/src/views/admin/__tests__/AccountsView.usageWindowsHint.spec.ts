@@ -2,17 +2,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 import AccountsView from '../AccountsView.vue'
+import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 
 const {
   listAccounts,
   listWithEtag,
   getBatchTodayStats,
+  getBatchUsage,
   getAllProxies,
   getAllGroups
 } = vi.hoisted(() => ({
   listAccounts: vi.fn(),
   listWithEtag: vi.fn(),
   getBatchTodayStats: vi.fn(),
+  getBatchUsage: vi.fn(),
   getAllProxies: vi.fn(),
   getAllGroups: vi.fn()
 }))
@@ -23,6 +26,7 @@ vi.mock('@/api/admin', () => ({
       list: listAccounts,
       listWithEtag,
       getBatchTodayStats,
+      getBatchUsage,
       getUpstreamBillingProbeSettings: vi.fn().mockResolvedValue({ enabled: true, interval_minutes: 30 }),
       delete: vi.fn(),
       batchClearError: vi.fn(),
@@ -77,6 +81,7 @@ const DataTableStub = {
       </template>
       <div v-for="row in data" :key="row.id" data-test="account-rate">
         <slot name="cell-rate_multiplier" :row="row" />
+        <slot name="cell-usage" :row="row" />
       </div>
     </div>
   `
@@ -88,7 +93,7 @@ const HelpTooltipStub = {
   template: '<span data-test="usage-windows-hint">{{ content }}</span>'
 }
 
-function mountView() {
+function mountView(renderUsage = false) {
   return mount(AccountsView, {
     global: {
       stubs: {
@@ -124,7 +129,7 @@ function mountView() {
         AccountStatusIndicator: true,
         AccountTodayStatsCell: true,
         AccountGroupsCell: true,
-        AccountUsageCell: true,
+        AccountUsageCell: !renderUsage,
         Icon: true
       }
     }
@@ -138,6 +143,7 @@ describe('admin AccountsView usage windows hint', () => {
     listAccounts.mockReset()
     listWithEtag.mockReset()
     getBatchTodayStats.mockReset()
+    getBatchUsage.mockReset().mockResolvedValue({ usage: {}, errors: {} })
     getAllProxies.mockReset()
     getAllGroups.mockReset()
 
@@ -156,6 +162,36 @@ describe('admin AccountsView usage windows hint', () => {
     getBatchTodayStats.mockResolvedValue({ stats: {} })
     getAllProxies.mockResolvedValue([])
     getAllGroups.mockResolvedValue([])
+  })
+
+  it('fetches Kiro quota through the desktop batch flow and refreshes it on demand', async () => {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation(() => ({
+        matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn()
+      }))
+    })
+    listAccounts.mockResolvedValueOnce({
+      items: [{ id: 9, name: 'Kiro', platform: 'kiro', type: 'oauth', status: 'active', schedulable: true, extra: {} }],
+      total: 1, page: 1, page_size: 20, pages: 1
+    })
+    const quota = (used: number) => ({ source: 'active', kiro_quota: { usageBreakdownList: [
+      { resourceType: 'CREDIT', currentUsage: used, usageLimit: 50, unit: 'INVOCATIONS' }
+    ] } })
+    getBatchUsage.mockResolvedValueOnce({ usage: { '9': quota(0) }, errors: {} })
+    getBatchUsage.mockResolvedValueOnce({ usage: { '9': quota(4) }, errors: {} })
+    const wrapper = mountView(true)
+    try {
+      await vi.waitFor(() => expect(wrapper.text()).toContain('0 / 50 INVOCATIONS'))
+      expect(getBatchUsage).toHaveBeenNthCalledWith(1, [9], false)
+      expect(wrapper.findComponent(AccountUsageCell).text()).not.toContain('kiro.quotaUnknown')
+      await wrapper.get('[data-testid="refresh-kiro-quota"]').trigger('click')
+      await vi.waitFor(() => expect(wrapper.text()).toContain('4 / 50 INVOCATIONS'))
+      expect(getBatchUsage).toHaveBeenNthCalledWith(2, [9], true)
+      expect(wrapper.text()).toContain('46 INVOCATIONS')
+    } finally {
+      wrapper.unmount()
+    }
   })
 
   it('keeps groups available when loading proxies fails', async () => {

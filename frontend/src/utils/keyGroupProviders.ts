@@ -6,6 +6,7 @@ export const KEY_GROUP_PROVIDERS = ['anthropic', 'openai', 'domestic', 'other'] 
 
 // Classify by the configured upstream platform, never by a group's display name.
 const PROVIDER_BY_PLATFORM: Record<GroupPlatform, KeyGroupProvider> = {
+	kiro: 'other',
   anthropic: 'anthropic',
   openai: 'openai',
   kimi: 'domestic',

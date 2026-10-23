@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
@@ -20,6 +21,15 @@ import (
 type availableModelsAdminService struct {
 	*stubAdminService
 	account service.Account
+}
+
+type kiroAvailableModelsAccountRepo struct {
+	service.AccountRepository
+	account *service.Account
+}
+
+func (r *kiroAvailableModelsAccountRepo) GetByID(context.Context, int64) (*service.Account, error) {
+	return r.account, nil
 }
 
 func (s *availableModelsAdminService) GetAccount(_ context.Context, id int64) (*service.Account, error) {
@@ -111,6 +121,27 @@ func TestAccountHandlerGetAvailableModels_GrokUsesXAIModels(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Len(t, resp.Data, 1)
 	require.Equal(t, "grok-4.3", resp.Data[0].ID)
+}
+
+func TestAccountHandlerGetAvailableModels_KiroDiscoversWithoutMappings(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{ID: 49, Platform: service.PlatformKiro, Type: service.AccountTypeOAuth, Status: service.StatusActive,
+			Credentials: map[string]any{"auth_method": "idc", "access_token": "test-access", "refresh_token": "test-refresh", "client_id": "test-client", "client_secret": "test-secret", "expires_at": time.Now().Add(time.Hour).Unix()}},
+	}
+	upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"models":[{"modelId":"claude-sonnet-4.5","modelName":"Claude Sonnet 4.5"}]}`))}}
+	repo := &kiroAvailableModelsAccountRepo{account: &svc.account}
+	gateway := service.ProvideKiroGatewayService(repo, upstream, service.NewOAuthRefreshAPI(repo, nil), nil, nil)
+	tester := service.ProvideAccountTestService(nil, nil, nil, nil, nil, upstream, &config.Config{}, nil, nil, nil, nil, gateway)
+	handler := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, tester, nil, nil, nil, nil, nil)
+	router := gin.New()
+	router.GET("/api/v1/admin/accounts/:id/models", handler.GetAvailableModels)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/49/models", nil))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), `"id":"claude-sonnet-4.5"`)
+	require.Contains(t, rec.Body.String(), `"display_name":"Claude Sonnet 4.5"`)
+	require.NotContains(t, rec.Body.String(), "test-access")
 }
 
 func TestAccountHandlerGetAvailableModels_GrokDefaultsToXAIModelsWithoutMapping(t *testing.T) {

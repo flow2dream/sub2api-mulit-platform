@@ -154,6 +154,11 @@ func (s *UsageService) GetByID(ctx context.Context, id int64) (*UsageLog, error)
 	if err != nil {
 		return nil, fmt.Errorf("get usage log: %w", err)
 	}
+	entries := []UsageLog{*log}
+	if err := s.enrichKiroUsage(ctx, entries); err != nil {
+		return nil, err
+	}
+	*log = entries[0]
 	return log, nil
 }
 
@@ -162,6 +167,9 @@ func (s *UsageService) ListByUser(ctx context.Context, userID int64, params pagi
 	logs, pagination, err := s.usageRepo.ListByUser(ctx, userID, params)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list usage logs: %w", err)
+	}
+	if err := s.enrichKiroUsage(ctx, logs); err != nil {
+		return nil, nil, err
 	}
 	return logs, pagination, nil
 }
@@ -172,6 +180,9 @@ func (s *UsageService) ListByAPIKey(ctx context.Context, apiKeyID int64, params 
 	if err != nil {
 		return nil, nil, fmt.Errorf("list usage logs: %w", err)
 	}
+	if err := s.enrichKiroUsage(ctx, logs); err != nil {
+		return nil, nil, err
+	}
 	return logs, pagination, nil
 }
 
@@ -180,6 +191,9 @@ func (s *UsageService) ListByAccount(ctx context.Context, accountID int64, param
 	logs, pagination, err := s.usageRepo.ListByAccount(ctx, accountID, params)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list usage logs: %w", err)
+	}
+	if err := s.enrichKiroUsage(ctx, logs); err != nil {
+		return nil, nil, err
 	}
 	return logs, pagination, nil
 }
@@ -440,6 +454,9 @@ func (s *UsageService) ListWithFilters(ctx context.Context, params pagination.Pa
 	logs, result, err := s.usageRepo.ListWithFilters(ctx, params, filters)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list usage logs with filters: %w", err)
+	}
+	if err := s.enrichKiroUsage(ctx, logs); err != nil {
+		return nil, nil, err
 	}
 	return logs, result, nil
 }

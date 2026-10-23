@@ -1009,6 +1009,10 @@ func decodeUpstreamBillingProbeSnapshot(extra map[string]any) *UpstreamBillingPr
 // type=apikey by the admin form, so only pre-existing type=upstream rows
 // cannot turn the probe on.
 func IsUpstreamBillingProbeIdentity(platform, accountType string) bool {
+	// Kiro has a native quota endpoint; its key is not a balance-probe API key.
+	if platform == PlatformKiro {
+		return false
+	}
 	return accountType == AccountTypeAPIKey && domain.IsConcretePlatform(platform)
 }
 

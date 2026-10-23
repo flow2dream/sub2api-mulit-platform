@@ -486,6 +486,12 @@ func registerAntigravityOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers)
 }
 
 func registerGrokOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	kiro := admin.Group("/kiro")
+	{
+		kiro.POST("/oauth/auth-url", h.Admin.KiroOAuth.Start)
+		kiro.POST("/oauth/check", h.Admin.KiroOAuth.Poll)
+	}
+
 	grok := admin.Group("/grok")
 	{
 		grok.GET("/oauth/capabilities", h.Admin.GrokOAuth.GetCapabilities)

@@ -342,6 +342,21 @@
       <div v-else class="text-xs text-gray-400">-</div>
     </template>
 
+    <!-- Kiro OAuth accounts: native getUsageLimits quota -->
+    <template v-else-if="account.platform === 'kiro'">
+      <div v-if="loading" class="text-xs text-gray-500">{{ t('common.loading') }}</div>
+      <div v-else class="space-y-1 text-xs">
+        <p v-if="usageInfo?.error || error || !usageInfo?.kiro_quota" class="text-amber-600" :title="usageInfo?.error || error || ''">{{ t('admin.accounts.kiro.quotaUnknown') }}</p>
+        <template v-for="bucket in usageInfo?.kiro_quota?.usageBreakdownList || []" :key="bucket.resourceType">
+          <p>{{ t('admin.accounts.kiro.baseQuota') }}: {{ bucket.currentUsage }} / {{ bucket.usageLimit }} {{ bucket.unit }}</p>
+          <p>{{ t('admin.accounts.kiro.remainingQuota') }}: {{ formatCompactNumber(Math.max(0, bucket.usageLimit - bucket.currentUsage)) }} {{ bucket.unit }}</p>
+          <p v-if="bucket.freeTrialInfo">{{ t('admin.accounts.kiro.trialQuota') }}: {{ bucket.freeTrialInfo.currentUsage }} / {{ bucket.freeTrialInfo.usageLimit }} ({{ bucket.freeTrialInfo.freeTrialStatus }})</p>
+          <p v-for="bonus in bucket.bonuses || []" :key="bonus.displayName">{{ t('admin.accounts.kiro.bonusQuota') }}: {{ bonus.currentUsage }} / {{ bonus.usageLimit }} ({{ bonus.status }})</p>
+        </template>
+      </div>
+      <button v-if="account.type === 'oauth'" type="button" class="text-xs text-primary-600 hover:underline disabled:opacity-50" :disabled="loading" data-testid="refresh-kiro-quota" @click="loadUsage({ source: 'active', bypassCache: true })">{{ t('admin.accounts.kiro.refreshQuota') }}</button>
+    </template>
+
     <!-- Grok OAuth accounts: passive xAI quota headers + local Sub2API usage -->
     <template v-else-if="account.platform === 'grok' && account.type === 'oauth'">
       <div v-if="loading" class="space-y-1.5">
@@ -792,6 +807,7 @@ const isGeminiVertex = computed(() => {
 
 // Show usage windows for OAuth and Setup Token accounts
 const showUsageWindows = computed(() => {
+  if (props.account.platform === 'kiro') return true
   // Gemini: we can always compute local usage windows from DB logs (simulated quotas).
   // 第三方上游 API Key 没有模拟配额，按普通 Key 账号展示今日统计与额度进度条。
   if (props.account.platform === 'gemini') return !isGeminiThirdPartyApiKey.value
@@ -804,6 +820,7 @@ const showUsageWindows = computed(() => {
 })
 
 const shouldFetchUsage = computed(() => {
+  if (props.account.platform === 'kiro') return props.account.type === 'oauth'
   if (props.account.platform === 'anthropic') {
     return props.account.type === 'oauth' || props.account.type === 'setup-token'
   }

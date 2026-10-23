@@ -130,6 +130,26 @@ describe('AccountUsageCell', () => {
     })
   })
 
+  it('loads Kiro quota directly outside desktop batch management and supports retry after failure', async () => {
+    getUsage.mockRejectedValueOnce(new Error('unavailable')).mockResolvedValueOnce({
+      source: 'active',
+      kiro_quota: { usageBreakdownList: [{ resourceType: 'CREDIT', currentUsage: 0, usageLimit: 50, unit: 'INVOCATIONS' }] }
+    })
+    const wrapper = mount(AccountUsageCell, { props: { account: makeAccount({ id: 9801, platform: 'kiro', type: 'oauth' }) } })
+    try {
+      await flushPromises()
+      expect(getUsage).toHaveBeenCalledWith(9801)
+      expect(wrapper.text()).toContain('kiro.quotaUnknown')
+      await wrapper.get('[data-testid="refresh-kiro-quota"]').trigger('click')
+      await flushPromises()
+      expect(getUsage).toHaveBeenLastCalledWith(9801, 'active', true)
+      expect(wrapper.text()).toContain('0 / 50 INVOCATIONS')
+      expect(wrapper.text()).not.toContain('kiro.quotaUnknown')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('renders eligible Ollama Cloud state and forwards query updates', async () => {
     const wrapper = mount(AccountUsageCell, {
       props: {

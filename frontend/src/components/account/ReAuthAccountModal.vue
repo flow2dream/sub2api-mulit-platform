@@ -6,6 +6,11 @@
     @close="handleClose"
   >
     <div v-if="account" class="space-y-4">
+      <template v-if="account.platform === 'kiro'">
+        <KiroCredentialsForm :key="account.id + '-' + show" ref="kiroFormRef" :credentials="account.credentials" :account-type="account.type" :proxy-id="account.proxy_id" editing reauthorizing />
+        <button type="button" class="btn btn-primary" :disabled="kiroSaving" @click="saveKiroCredentials">{{ t('common.save') }}</button>
+      </template>
+      <template v-else>
       <!-- Account Info -->
       <div
         class="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-dark-600 dark:bg-dark-700"
@@ -134,6 +139,7 @@
         @cookie-auth="handleCookieAuth"
       />
 
+      </template>
     </div>
 
     <template #footer>
@@ -142,7 +148,7 @@
           {{ t('common.cancel') }}
         </button>
         <button
-          v-if="isManualInputMethod"
+          v-if="account.platform !== 'kiro' && isManualInputMethod"
           type="button"
           :disabled="!canExchangeCode"
           class="btn btn-primary"
@@ -180,6 +186,9 @@
 </template>
 
 <script setup lang="ts">
+import KiroCredentialsForm from './KiroCredentialsForm.vue'
+const kiroFormRef = ref<InstanceType<typeof KiroCredentialsForm> | null>(null)
+const kiroSaving = ref(false)
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -221,6 +230,19 @@ const emit = defineEmits<{
 
 const appStore = useAppStore()
 const { t } = useI18n()
+
+async function saveKiroCredentials() {
+  if (!props.account || !kiroFormRef.value) return
+  kiroSaving.value = true
+  try {
+    const credentials = await kiroFormRef.value.prepareCredentials()
+    await adminAPI.accounts.update(props.account.id, { credentials })
+    await adminAPI.accounts.clearError(props.account.id)
+    emit('reauthorized')
+    handleClose()
+  } catch (error) { appStore.showError(error instanceof Error ? error.message : t('admin.accounts.kiro.invalidJson')) }
+  finally { kiroSaving.value = false }
+}
 
 // OAuth composables
 const claudeOAuth = useAccountOAuth()

@@ -160,6 +160,7 @@
             <PlatformIcon platform="grok" size="sm" />
             Grok
           </button>
+          <button type="button" @click="form.platform = 'kiro'" :class="['flex flex-1 items-center justify-center rounded-md px-4 py-2.5 text-sm font-medium', form.platform === 'kiro' ? 'bg-white text-purple-600 shadow-sm dark:bg-dark-600' : 'text-gray-600 dark:text-gray-400']" data-testid="platform-kiro">Kiro</button>
           <button
             type="button"
             @click="selectTypeSafePlatform()"
@@ -396,12 +397,13 @@
         </div>
       </div>
 
-      <!-- Account Type Selection (OpenAI) -->
-      <div v-if="form.platform === 'openai'">
+      <!-- Account Type Selection (OpenAI / Kiro) -->
+      <div v-if="form.platform === 'openai' || form.platform === 'kiro'">
         <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
         <div class="mt-2 grid grid-cols-2 gap-3" data-tour="account-form-type">
           <button
             type="button"
+            data-testid="account-type-oauth"
             @click="accountCategory = 'oauth-based'"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
@@ -422,12 +424,13 @@
             </div>
             <div>
               <span class="block text-sm font-medium text-gray-900 dark:text-white">OAuth</span>
-              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.types.chatgptOauth') }}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t(form.platform === 'kiro' ? 'admin.accounts.kiro.oauthDescription' : 'admin.accounts.types.chatgptOauth') }}</span>
             </div>
           </button>
 
           <button
             type="button"
+            data-testid="account-type-apikey"
             @click="accountCategory = 'apikey'"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
@@ -448,12 +451,19 @@
             </div>
             <div>
               <span class="block text-sm font-medium text-gray-900 dark:text-white">API Key</span>
-              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.types.responsesApi') }}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t(form.platform === 'kiro' ? 'admin.accounts.kiro.apiKeyDescription' : 'admin.accounts.types.responsesApi') }}</span>
             </div>
           </button>
 
         </div>
       </div>
+
+      <KiroCredentialsForm
+        v-if="form.platform === 'kiro' && accountCategory === 'apikey'"
+        :key="String(show)"
+        ref="kiroFormRef"
+        account-type="apikey"
+      />
 
       <!-- Account Type Selection (Grok) -->
       <div v-if="form.platform === 'grok'">
@@ -1500,7 +1510,7 @@
       </div>
 
       <!-- API Key input (only for apikey type, excluding Antigravity which has its own fields) -->
-      <div v-if="form.type === 'apikey' && form.platform !== 'antigravity'" class="space-y-4">
+      <div v-if="form.type === 'apikey' && form.platform !== 'antigravity' && form.platform !== 'kiro'" class="space-y-4">
         <div v-if="!isMultiProtocolPlatform || apiProtocol !== 'adaptive'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -3760,9 +3770,18 @@
 
     </form>
 
-    <!-- Step 2: OAuth Authorization -->
-    <div v-else class="space-y-5">
+    <!-- Keep Kiro credentials mounted when returning to basic information. -->
+    <div v-show="step === 2" class="space-y-5">
+      <KiroCredentialsForm
+        v-if="form.platform === 'kiro' && isOAuthFlow"
+        v-show="step === 2"
+        :key="String(show)"
+        ref="kiroFormRef"
+        account-type="oauth"
+        :proxy-id="form.proxy_id"
+      />
       <OAuthAuthorizationFlow
+        v-if="step === 2 && form.platform !== 'kiro'"
         ref="oauthFlowRef"
         :add-method="form.platform === 'anthropic' ? addMethod : 'oauth'"
         :auth-url="currentAuthUrl"
@@ -3845,7 +3864,17 @@
           {{ t('common.back') }}
         </button>
         <button
-          v-if="isManualInputMethod"
+          v-if="form.platform === 'kiro'"
+          type="button"
+          :disabled="submitting"
+          class="btn btn-primary"
+          data-testid="kiro-create-account"
+          @click="handleCreateKiroAccount"
+        >
+          {{ submitting ? t('admin.accounts.creating') : t('common.create') }}
+        </button>
+        <button
+          v-else-if="isManualInputMethod"
           type="button"
           :disabled="!canExchangeCode"
           class="btn btn-primary"
@@ -4112,6 +4141,8 @@
 </template>
 
 <script setup lang="ts">
+import KiroCredentialsForm from './KiroCredentialsForm.vue'
+const kiroFormRef = ref<InstanceType<typeof KiroCredentialsForm> | null>(null)
 import { ref, reactive, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -4237,6 +4268,7 @@ const { t } = useI18n()
 const browserTimeZone = getBrowserTimeZone()
 
 const oauthStepTitle = computed(() => {
+  if (form.platform === 'kiro') return t('admin.accounts.kiro.importStep')
   if (form.platform === 'openai') return t('admin.accounts.oauth.openai.title')
   if (form.platform === 'gemini') return t('admin.accounts.oauth.gemini.title')
   if (form.platform === 'antigravity') return t('admin.accounts.oauth.antigravity.title')
@@ -5558,7 +5590,7 @@ const submitCreateAccount = async (payload: CreateAccountRequest) => {
   try {
     const account = await adminAPI.accounts.create(withAntigravityConfirmFlag(payload))
     const modelMapping = payload.credentials.model_mapping
-    const hasConcreteMappedTarget = payload.type === 'apikey' &&
+    const hasConcreteMappedTarget = payload.platform !== 'kiro' && payload.type === 'apikey' &&
       typeof modelMapping === 'object' &&
       modelMapping !== null &&
       Object.values(modelMapping).some((target) =>
@@ -5938,6 +5970,21 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
   applyVertexServiceAccountJson(await file.text())
 }
 
+const handleCreateKiroAccount = async () => {
+  if (submitting.value) return
+  submitting.value = true
+  try {
+    if (!form.name.trim()) throw new Error(t('admin.accounts.pleaseEnterAccountName'))
+    const credentials = await kiroFormRef.value?.prepareCredentials()
+    if (!credentials) return
+    await doCreateAccount({ ...form, credentials, group_ids: form.group_ids, auto_pause_on_expired: autoPauseOnExpired.value })
+  } catch (error) {
+    appStore.showError(error instanceof Error ? error.message : t('admin.accounts.kiro.invalidJson'))
+  } finally {
+    submitting.value = false
+  }
+}
+
 const handleSubmit = async () => {
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
@@ -5952,6 +5999,11 @@ const handleSubmit = async () => {
       return
     }
     step.value = 2
+    return
+  }
+
+  if (form.platform === 'kiro') {
+    await handleCreateKiroAccount()
     return
   }
 

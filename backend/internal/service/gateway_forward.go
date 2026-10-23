@@ -89,6 +89,12 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 
 // Forward 转发请求到Claude API
 func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, parsed *ParsedRequest) (result *ForwardResult, err error) {
+	if account != nil && account.Platform == PlatformKiro {
+		if s.kiroGatewayService == nil || parsed == nil {
+			return nil, fmt.Errorf("kiro gateway is not configured or request is empty")
+		}
+		return s.kiroGatewayService.Forward(ctx, c, account, parsed.Body.Bytes(), APIProtocolAnthropic)
+	}
 	startTime := time.Now()
 	if parsed == nil {
 		return nil, fmt.Errorf("parse request: empty request")

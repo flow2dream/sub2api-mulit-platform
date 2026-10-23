@@ -937,7 +937,7 @@ export interface UpdateGroupRequest {
 // ==================== Account & Proxy Types ====================
 
 /** 前端内置专属界面（图标、配色、表单等）的平台。 */
-export type KnownAccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go' | 'typesafe' | 'command_code' | 'cline'
+export type KnownAccountPlatform = 'kiro' | 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go' | 'typesafe' | 'command_code' | 'cline'
 /**
  * 账号平台：内置平台，或后端平台清单中新登记的平台（任意字符串）。
  * `string & {}` 保留内置平台的字面量补全。
@@ -1453,6 +1453,8 @@ export interface GrokBillingSummary {
 }
 
 export interface AccountUsageInfo {
+  kiro_quota?: { usageBreakdownList: { resourceType: string; currentUsage: number; usageLimit: number; unit: string; freeTrialInfo?: { currentUsage: number; usageLimit: number; freeTrialStatus: string }; bonuses?: { displayName: string; currentUsage: number; usageLimit: number; status: string }[] }[]; nextDateReset?: string | number }
+
   source?: 'passive' | 'active'
   updated_at: string | null
   five_hour: UsageProgress | null
@@ -1766,6 +1768,7 @@ export type ImageSizeSource = 'output' | 'input' | 'default' | 'legacy'
 export type ImageSizeBreakdown = Record<string, number>
 
 export interface UsageLog {
+  usage_source?: 'reported' | 'mixed' | 'estimated'
   id: number
   user_id: number
   api_key_id: number
@@ -1840,6 +1843,16 @@ export interface UsageLogAccountSummary {
 }
 
 export interface AdminUsageLog extends UsageLog {
+  upstream_usage?: {
+    input_tokens: number
+    output_tokens: number
+    input_reported: boolean
+    output_reported: boolean
+    credits?: number
+    context_percentage?: number
+    complete: boolean
+    source: string
+  }
   upstream_model?: string | null
   upstream_reasoning_effort?: string | null
   upstream_response_model?: string | null

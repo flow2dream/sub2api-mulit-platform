@@ -146,6 +146,8 @@
         </template>
 
         <template #cell-tokens="{ row }">
+          <span v-if="row.usage_source && row.usage_source !== 'reported'" class="text-xs text-amber-600 dark:text-amber-400" :title="t('admin.accounts.kiro.estimateHint')">{{ t('admin.accounts.kiro.estimatedTokens') }}</span>
+          <span v-if="row.upstream_usage?.credits != null" class="block text-xs text-gray-500">{{ row.upstream_usage.credits }} credits</span>
           <!-- 图片生成请求（仅按次计费时显示图片格式） -->
           <div v-if="isImageUsage(row)" class="flex items-center gap-1.5">
             <svg class="h-4 w-4 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">

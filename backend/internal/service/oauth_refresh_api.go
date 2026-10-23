@@ -34,6 +34,11 @@ type GrokOAuthRefreshSuccessRepository interface {
 	) (bool, error)
 }
 
+// Kiro rotations must not overwrite credentials replaced during the HTTP call.
+type KiroOAuthRefreshSuccessRepository interface {
+	UpdateKiroOAuthCredentialsIfUnchanged(context.Context, int64, map[string]any, *int64, map[string]any) (bool, error)
+}
+
 const (
 	defaultRefreshLockTTL                   = 60 * time.Second
 	defaultRefreshLockReleaseTimeout        = 2 * time.Second
@@ -293,7 +298,24 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	// 5. 设置版本号 + 更新 DB
 	if newCredentials != nil {
 		newCredentials["_token_version"] = time.Now().UnixMilli()
-		if freshAccount.IsGrokOAuth() {
+		if freshAccount.Platform == PlatformKiro {
+			repo, ok := api.accountRepo.(KiroOAuthRefreshSuccessRepository)
+			if !ok {
+				return nil, fmt.Errorf("kiro OAuth conditional persistence is not configured")
+			}
+			applied, err := repo.UpdateKiroOAuthCredentialsIfUnchanged(ctx, freshAccount.ID, attemptedAccount.Credentials, attemptedAccount.ProxyID, newCredentials)
+			if err != nil {
+				return nil, &providerCycleContainmentRefreshError{err: fmt.Errorf("kiro OAuth rotation persistence failed: %w", err)}
+			}
+			current, err := api.accountRepo.GetByID(ctx, freshAccount.ID)
+			if err != nil || current == nil {
+				return nil, &providerCycleContainmentRefreshError{err: fmt.Errorf("kiro OAuth durable state unavailable")}
+			}
+			if !applied {
+				return &OAuthRefreshResult{Account: current}, nil
+			}
+			freshAccount = current
+		} else if freshAccount.IsGrokOAuth() {
 			conditionalRepo, ok := api.accountRepo.(GrokOAuthRefreshSuccessRepository)
 			if !ok {
 				return nil, &providerConfigurationRefreshError{

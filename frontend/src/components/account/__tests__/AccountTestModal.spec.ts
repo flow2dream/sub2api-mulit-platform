@@ -118,6 +118,80 @@ describe('AccountTestModal', () => {
     localStorage.clear()
   })
 
+  function mountKiroModal() {
+    return mount(AccountTestModal, {
+      props: { show: true, account: { ...buildAccount(), platform: 'kiro', name: 'Kiro' } },
+      global: { stubs: { BaseDialog: BaseDialogStub, Select: SelectStub, TextArea: TextAreaStub, Icon: true } }
+    })
+  }
+
+  it('automatically loads Kiro models when mounted open and selects a real model', async () => {
+    getAvailableModelsMock.mockResolvedValue([{ id: 'auto', display_name: 'Auto' }, { id: 'claude-sonnet-4.5', display_name: 'Claude Sonnet 4.5' }, { id: 'minimax-m2.5', display_name: 'MiniMax M2.5' }])
+    const wrapper = mountKiroModal()
+    await flushPromises()
+    expect(getAvailableModelsMock).toHaveBeenCalledWith(1)
+    expect(wrapper.get<HTMLSelectElement>('select').element.value).toBe('minimax-m2.5')
+    expect(wrapper.text()).toContain('Claude Sonnet 4.5')
+    expect(wrapper.find('[data-testid="account-models-error"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows model discovery errors and allows fetching again', async () => {
+    getAvailableModelsMock.mockRejectedValueOnce({ response: { data: { message: 'Kiro returned HTTP 403' } } }).mockResolvedValueOnce([{ id: 'glm-5', display_name: 'GLM 5' }])
+    const wrapper = mountKiroModal()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="account-models-error"]').text()).toContain('403')
+    await wrapper.get('[data-testid="refresh-account-models"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get<HTMLSelectElement>('select').element.value).toBe('glm-5')
+    expect(wrapper.find('[data-testid="account-models-error"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows Kiro throttling without claiming a connection and enforces the retry countdown', async () => {
+    getAvailableModelsMock.mockResolvedValue([{ id: 'claude-haiku-4.5', display_name: 'Haiku' }])
+    const wrapper = mountKiroModal()
+    await flushPromises()
+    vi.useFakeTimers()
+    try {
+      const chunks = [new TextEncoder().encode(
+        'data: {"type":"status","code":"kiro_connecting","text":"waiting"}\n\n' +
+        'data: {"type":"error","code":"kiro_throttled","error":"fallback","data":{"retry_after_seconds":2}}\n\n'
+      )]
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, body: { getReader: () => ({
+        read: async () => chunks.length ? { done: false, value: chunks.shift() } : { done: true }
+      }) } }) as any
+      await (wrapper.vm as any).startTest()
+      await flushPromises()
+      expect(wrapper.text()).toContain('admin.accounts.kiro.throttled')
+      expect(wrapper.text()).not.toContain('admin.accounts.connectedToApi')
+      const retry = wrapper.findAll('button').find(button => button.text().includes('kiro.retryCountdown'))!
+      expect(retry.attributes('disabled')).toBeDefined()
+      await (wrapper.vm as any).startTest()
+      expect(global.fetch).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(2100)
+      expect((wrapper.vm as any).retrySeconds).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not overwrite another account with an old Kiro model response', async () => {
+    let resolve!: (models: unknown[]) => void
+    getAvailableModelsMock.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const wrapper = mountKiroModal()
+    getAvailableModelsMock.mockResolvedValueOnce([{ id: 'new-model', display_name: 'New account model' }])
+    await wrapper.setProps({ account: { ...buildAccount(), id: 2, platform: 'kiro' } })
+    await flushPromises()
+    resolve([{ id: 'old-model', display_name: 'Old account model' }])
+    await flushPromises()
+    expect(wrapper.get<HTMLSelectElement>('select').element.value).toBe('new-model')
+    expect(wrapper.text()).not.toContain('Old account model')
+    wrapper.unmount()
+  })
+
   it('posts compact mode for OpenAI compact probe', async () => {
     const wrapper = mount(AccountTestModal, {
       props: {

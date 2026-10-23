@@ -1413,6 +1413,11 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 			"cannot refresh spark shadow account; its credentials are managed by the parent account")
 	}
 
+	if account.Platform == service.PlatformKiro {
+		updated, err := h.accountTestService.RefreshKiroAccount(ctx, account)
+		return updated, "", err
+	}
+
 	var newCredentials map[string]any
 
 	if account.IsOpenAI() {
@@ -2897,6 +2902,25 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	// Explicit account mappings expose their request-side names to connectivity tests.
 	if account.Platform == service.PlatformAntigravity {
 		response.Success(c, antigravityAccountTestModels(account.Credentials["model_mapping"]))
+		return
+	}
+
+	if account.Platform == service.PlatformKiro {
+		if h.accountTestService == nil {
+			response.Error(c, http.StatusServiceUnavailable, "Kiro model discovery is unavailable")
+			return
+		}
+		models, fetchErr := h.accountTestService.FetchKiroAccountModels(c.Request.Context(), account)
+		if fetchErr != nil {
+			message := "Failed to fetch Kiro models; check authorization, region and proxy"
+			var syncErr *service.UpstreamModelSyncError
+			if errors.As(fetchErr, &syncErr) {
+				message = syncErr.SafeMessage()
+			}
+			response.Error(c, http.StatusBadGateway, message)
+			return
+		}
+		response.Success(c, models)
 		return
 	}
 

@@ -12,6 +12,7 @@ const {
   probeUpstreamBillingMock,
   syncUpstreamModelsMock,
   showWarningMock,
+  showErrorMock,
   importCodexSessionMock,
   createOpenAICodexPATMock,
   authIsSimpleMode,
@@ -20,6 +21,7 @@ const {
   probeUpstreamBillingMock: vi.fn(),
   syncUpstreamModelsMock: vi.fn(),
   showWarningMock: vi.fn(),
+  showErrorMock: vi.fn(),
   importCodexSessionMock: vi.fn(),
   createOpenAICodexPATMock: vi.fn(),
   authIsSimpleMode: { value: true },
@@ -27,7 +29,7 @@ const {
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
-    showError: vi.fn(),
+    showError: showErrorMock,
     showSuccess: vi.fn(),
     showWarning: showWarningMock,
   }),
@@ -74,6 +76,9 @@ vi.mock('vue-i18n', async () => {
 })
 
 import CreateAccountModal from '../CreateAccountModal.vue'
+
+const kiroLoginMocks = vi.hoisted(() => ({ start: vi.fn(), check: vi.fn() }))
+vi.mock('@/api/admin/kiro', () => ({ startKiroAuthorization: kiroLoginMocks.start, checkKiroAuthorization: kiroLoginMocks.check }))
 
 const BaseDialogStub = defineComponent({
   name: 'BaseDialog',
@@ -206,6 +211,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     probeUpstreamBillingMock.mockReset().mockResolvedValue({})
     syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
     showWarningMock.mockReset()
+    showErrorMock.mockReset()
     importCodexSessionMock.mockReset().mockResolvedValue({
       created: 1,
       updated: 0,
@@ -218,6 +224,167 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
   })
 
   afterEach(() => vi.useRealTimers())
+
+  it('creates a Kiro account after the user completes manual browser authorization', async () => {
+    kiroLoginMocks.start.mockResolvedValue({ session_id: 'session', auth_url: 'https://view.awsapps.com/start/', user_code: 'USER-CODE', status: 'pending' })
+    kiroLoginMocks.check.mockResolvedValue({ status: 'completed', credentials: { auth_method: 'idc', auth_region: 'us-east-1', client_id: 'test-client', client_secret: 'test-secret', access_token: 'test-access', refresh_token: 'test-refresh' } })
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="platform-kiro"]').trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Kiro login')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    expect(createAccountMock).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="kiro-generate-url"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="kiro-check-authorization"]').trigger('click')
+    await flushPromises()
+    expect(createAccountMock).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="kiro-create-account"]').trigger('click')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'Kiro login', type: 'oauth', credentials: expect.objectContaining({ auth_method: 'idc', refresh_token: 'test-refresh', client_secret: 'test-secret' }) }))
+    wrapper.unmount()
+  })
+
+  it('checks authorization on create after an earlier pending result without generating a second link', async () => {
+    kiroLoginMocks.start.mockReset().mockResolvedValue({ session_id: 'session', auth_url: 'https://view.awsapps.com/start/', user_code: 'USER-CODE' })
+    kiroLoginMocks.check.mockReset().mockResolvedValueOnce({ status: 'pending', retry_after: 2 }).mockResolvedValueOnce({ status: 'completed', credentials: { auth_method: 'idc', client_id: 'client', client_secret: 'secret', access_token: 'access', refresh_token: 'refresh' } })
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="platform-kiro"]').trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Kiro pending login')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await wrapper.get('[data-testid="kiro-generate-url"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="kiro-create-account"]').trigger('click')
+    await flushPromises()
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenLastCalledWith('admin.accounts.kiro.authorizationPending')
+    await wrapper.get('[data-testid="kiro-model-mapping"]').setValue('DEVICE-CODE')
+    await wrapper.get('[data-testid="kiro-create-account"]').trigger('click')
+    await flushPromises()
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenLastCalledWith('admin.accounts.kiro.invalidMapping')
+    expect(wrapper.get('[data-testid="kiro-login-status"]').text()).toContain('loginCompleted')
+    await wrapper.get('[data-testid="kiro-model-mapping"]').setValue('')
+    await wrapper.get('[data-testid="kiro-create-account"]').trigger('click')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock).toHaveBeenCalledWith(expect.objectContaining({ credentials: expect.objectContaining({ refresh_token: 'refresh' }) }))
+    expect(kiroLoginMocks.start).toHaveBeenCalledTimes(1)
+    expect(kiroLoginMocks.check).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('keeps creation disabled while a shared authorization check is in flight', async () => {
+    let resolve!: (value: unknown) => void
+    kiroLoginMocks.start.mockResolvedValue({ session_id: 'session', auth_url: 'https://view.awsapps.com/start/', user_code: 'USER-CODE' })
+    kiroLoginMocks.check.mockReset().mockImplementation(() => new Promise(done => { resolve = done }))
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="platform-kiro"]').trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Kiro login')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await wrapper.get('[data-testid="kiro-generate-url"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="kiro-check-authorization"]').trigger('click')
+    await wrapper.get('[data-testid="kiro-create-account"]').trigger('click')
+    expect(wrapper.get('[data-testid="kiro-create-account"]').attributes('disabled')).toBeDefined()
+    expect(kiroLoginMocks.check).toHaveBeenCalledTimes(1)
+    resolve({ status: 'completed', credentials: { auth_method: 'idc', client_id: 'client', client_secret: 'secret', access_token: 'access', refresh_token: 'refresh' } })
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(showErrorMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('creates a Kiro OAuth account only after importing credentials in the second step', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="platform-kiro"]').trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Kiro native')
+    expect(wrapper.get('[data-testid="kiro-credentials-form"]').isVisible()).toBe(false)
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(wrapper.find('form#create-account-form').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="kiro-credentials-form"]').isVisible()).toBe(true)
+    expect(wrapper.findComponent(OAuthAuthorizationFlowStub).exists()).toBe(false)
+    expect(wrapper.text()).toContain('admin.accounts.kiro.importStep')
+    await wrapper.get('[data-testid="kiro-mode-json"]').setValue(true)
+    await wrapper.get('[data-testid="kiro-import-json"]').setValue('{"refreshToken":"test-refresh","model_mapping":{"code":"native-model"}}')
+    await wrapper.get('[data-testid="kiro-create-account"]').trigger('click')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledWith(expect.objectContaining({ platform: 'kiro', type: 'oauth', name: 'Kiro native', credentials: expect.objectContaining({ refresh_token: 'test-refresh', auth_method: 'social', model_mapping: { code: 'native-model' } }) }))
+    expect(probeUpstreamBillingMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('preserves Kiro credentials and selected groups when returning to basic information', async () => {
+    authIsSimpleMode.value = false
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="platform-kiro"]').trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Kiro draft')
+    await wrapper.get('[data-testid="select-pricing-groups"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    const json = '{"refreshToken":"test-refresh","authMethod":"idc","clientId":"test-client","clientSecret":"test-secret"}'
+    await wrapper.get('[data-testid="kiro-mode-json"]').setValue(true)
+    await wrapper.get('[data-testid="kiro-import-json"]').setValue(json)
+    await selectButtonByText(wrapper, 'common.back')
+    expect(wrapper.findComponent(GroupSelectorStub).props('modelValue')).toEqual([1, 2])
+    expect(wrapper.get<HTMLInputElement>('form#create-account-form input[type="text"]').element.value).toBe('Kiro draft')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Kiro edited')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    expect(wrapper.get<HTMLTextAreaElement>('[data-testid="kiro-import-json"]').element.value).toBe(json)
+    await wrapper.get('[data-testid="kiro-create-account"]').trigger('click')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'Kiro edited', group_ids: [1, 2], credentials: expect.objectContaining({ auth_method: 'idc', client_id: 'test-client' }) }))
+    wrapper.unmount()
+  })
+
+  it('validates Kiro basic information and credentials before creating an account', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="platform-kiro"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    expect(showErrorMock).toHaveBeenCalledWith('admin.accounts.pleaseEnterAccountName')
+    expect(wrapper.find('form#create-account-form').exists()).toBe(true)
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Kiro')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await wrapper.get('[data-testid="kiro-create-account"]').trigger('click')
+    expect(showErrorMock).toHaveBeenCalledWith('admin.accounts.kiro.completeLoginFirst')
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(wrapper.emitted('close')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('retains the Kiro credential step after a failed creation and permits a retry', async () => {
+    createAccountMock.mockRejectedValueOnce({ response: { data: { message: 'save failed' } } })
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="platform-kiro"]').trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Kiro')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await wrapper.get('[data-testid="kiro-mode-json"]').setValue(true)
+    await wrapper.get('[data-testid="kiro-import-json"]').setValue('{"refreshToken":"test-refresh"}')
+    await wrapper.get('[data-testid="kiro-create-account"]').trigger('click')
+    await flushPromises()
+    expect(showErrorMock).toHaveBeenCalledWith('save failed')
+    expect(wrapper.emitted('close')).toBeUndefined()
+    expect(wrapper.get('[data-testid="kiro-create-account"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="kiro-create-account"]').trigger('click')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(wrapper.emitted('created')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('creates a Kiro API key directly like other API key accounts', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="platform-kiro"]').trigger('click')
+    await wrapper.get('[data-testid="account-type-apikey"]').trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Kiro key')
+    await wrapper.get('[data-testid="kiro-mode-json"]').setValue(true)
+    await wrapper.get('[data-testid="kiro-import-json"]').setValue('{"apiKey":"test-kiro-key","model_mapping":{"code":"native-model"}}')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledWith(expect.objectContaining({ platform: 'kiro', type: 'apikey', credentials: expect.objectContaining({ api_key: 'test-kiro-key', endpoint_family: 'runtime' }) }))
+    expect(probeUpstreamBillingMock).not.toHaveBeenCalled()
+    expect(syncUpstreamModelsMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
 
   it('sets month and year expiry presets without submitting the account form', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })

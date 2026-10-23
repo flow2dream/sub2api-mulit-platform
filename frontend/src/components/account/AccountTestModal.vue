@@ -53,6 +53,8 @@
           label-key="display_name"
           :placeholder="loadingModels ? t('common.loading') + '...' : t('admin.accounts.selectTestModel')"
         />
+        <p v-if="modelLoadError" role="alert" class="text-sm text-red-600 dark:text-red-400" data-testid="account-models-error">{{ modelLoadError }}</p>
+        <button v-if="account?.platform === 'kiro'" type="button" class="text-sm text-primary-600 hover:underline disabled:opacity-50" :disabled="loadingModels || status === 'connecting'" data-testid="refresh-account-models" @click="loadAvailableModels">{{ loadingModels ? t('common.loading') : t('admin.accounts.kiro.refreshModels') }}</button>
       </div>
 
       <div v-if="isOpenAIAccount" class="space-y-1.5">
@@ -205,10 +207,10 @@
         </button>
         <button
           @click="startTest"
-          :disabled="status === 'connecting' || !selectedModelId"
+          :disabled="loadingModels || status === 'connecting' || !selectedModelId || retrySeconds > 0"
           :class="[
             'flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all',
-            status === 'connecting' || !selectedModelId
+            loadingModels || status === 'connecting' || !selectedModelId || retrySeconds > 0
               ? 'cursor-not-allowed bg-primary-400 text-white'
               : status === 'success'
                 ? 'bg-green-500 text-white hover:bg-green-600'
@@ -228,7 +230,9 @@
           <Icon v-else name="refresh" size="sm" :stroke-width="2" />
           <span>
             {{
-              status === 'connecting'
+              retrySeconds > 0
+                ? t('admin.accounts.kiro.retryCountdown', { seconds: retrySeconds })
+                : status === 'connecting'
                 ? t('admin.accounts.testing')
                 : status === 'idle'
                   ? t('admin.accounts.startTest')
@@ -242,7 +246,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
@@ -251,6 +255,8 @@ import { Icon } from '@/components/icons'
 import { useClipboard } from '@/composables/useClipboard'
 import { buildApiUrl } from '@/api/client'
 import { adminAPI } from '@/api/admin'
+import { extractApiErrorMessage } from '@/utils/apiError'
+import { useKiroTestFeedback, type KiroTestEvent } from '@/composables/useKiroTestFeedback'
 import type { Account, ClaudeModel } from '@/types'
 
 const { t } = useI18n()
@@ -275,6 +281,8 @@ const emit = defineEmits<{
   (e: 'close'): void
 }>()
 
+const { retrySeconds, feedbackKey } = useKiroTestFeedback(() => props.account?.id)
+
 const terminalRef = ref<HTMLElement | null>(null)
 const status = ref<'idle' | 'connecting' | 'success' | 'error'>('idle')
 const outputLines = ref<OutputLine[]>([])
@@ -284,6 +292,9 @@ const availableModels = ref<ClaudeModel[]>([])
 const selectedModelId = ref('')
 const testPrompt = ref('')
 const loadingModels = ref(false)
+const modelLoadError = ref('')
+let modelLoadSequence = 0
+onBeforeUnmount(() => { modelLoadSequence++; abortStream() })
 let abortController: AbortController | null = null
 const generatedImages = ref<PreviewImage[]>([])
 const testMode = ref<'default' | 'compact'>('default')
@@ -322,17 +333,20 @@ const sortTestModels = (models: ClaudeModel[]) => {
 
 // Load available models when modal opens
 watch(
-  () => props.show,
-  async (newVal) => {
+  [() => props.show, () => props.account?.id],
+  async ([newVal]) => {
     if (newVal && props.account) {
       testPrompt.value = ''
       testMode.value = 'default'
       resetState()
       await loadAvailableModels()
     } else {
+      modelLoadSequence++
+      loadingModels.value = false
       abortStream()
     }
-  }
+  },
+  { immediate: true }
 )
 
 watch(selectedModelId, () => {
@@ -341,13 +355,20 @@ watch(selectedModelId, () => {
   }
 })
 
-const loadAvailableModels = async () => {
-  if (!props.account) return
-
+async function loadAvailableModels() {
+  const account = props.account
+  if (!account) return
+  const sequence = ++modelLoadSequence
   loadingModels.value = true
+  modelLoadError.value = ''
+  availableModels.value = []
   selectedModelId.value = '' // Reset selection before loading
   try {
-    const models = await adminAPI.accounts.getAvailableModels(props.account.id)
+    const models = await adminAPI.accounts.getAvailableModels(account.id)
+    if (sequence !== modelLoadSequence) return
+    if (!models.length && account.platform === 'kiro') {
+      modelLoadError.value = t('admin.accounts.kiro.noModelsFound')
+    }
     availableModels.value = props.account.platform === 'gemini' || props.account.platform === 'antigravity'
       ? sortTestModels(models)
       : models
@@ -355,6 +376,9 @@ const loadAvailableModels = async () => {
     if (availableModels.value.length > 0) {
       if (props.account.platform === 'gemini') {
         selectedModelId.value = availableModels.value[0].id
+      } else if (props.account.platform === 'kiro') {
+        selectedModelId.value = availableModels.value.find((m) => m.id === 'minimax-m2.5')?.id
+          || availableModels.value.find((m) => m.id !== 'auto')?.id || ''
       } else {
         // Try to select Sonnet as default, otherwise use first model
         const sonnetModel = availableModels.value.find((m) => m.id.includes('sonnet'))
@@ -362,16 +386,17 @@ const loadAvailableModels = async () => {
       }
     }
   } catch (error) {
-    console.error('Failed to load available models:', error)
+    if (sequence !== modelLoadSequence) return
+    modelLoadError.value = extractApiErrorMessage(error, t('admin.accounts.kiro.modelsLoadFailed'))
     // Fallback to empty list
     availableModels.value = []
     selectedModelId.value = ''
   } finally {
-    loadingModels.value = false
+    if (sequence === modelLoadSequence) loadingModels.value = false
   }
 }
 
-const resetState = () => {
+function resetState() {
   status.value = 'idle'
   outputLines.value = []
   streamingContent.value = ''
@@ -385,7 +410,7 @@ const handleClose = () => {
   emit('close')
 }
 
-const abortStream = () => {
+function abortStream() {
   if (abortController) {
     abortController.abort()
     abortController = null
@@ -405,7 +430,7 @@ const scrollToBottom = async () => {
 }
 
 const startTest = async () => {
-  if (!props.account || !selectedModelId.value) return
+  if (!props.account || loadingModels.value || !selectedModelId.value || status.value === 'connecting' || retrySeconds.value > 0) return
 
   resetState()
   status.value = 'connecting'
@@ -430,7 +455,7 @@ const startTest = async () => {
       },
       body: JSON.stringify({
         model_id: selectedModelId.value,
-        prompt: supportsImageTest.value ? testPrompt.value.trim() : '',
+        prompt: supportsImageTest.value ? testPrompt.value.trim() : props.account.platform === 'kiro' ? 'hi' : '',
         mode: isOpenAIAccount.value ? testMode.value : 'default'
       }),
       signal: abortController.signal
@@ -482,7 +507,7 @@ const startTest = async () => {
   }
 }
 
-const handleEvent = (event: {
+const handleEvent = (event: KiroTestEvent & {
   type: string
   text?: string
   model?: string
@@ -515,8 +540,9 @@ const handleEvent = (event: {
       break
 
     case 'status':
-      if (event.text) {
-        addLine(event.text, 'text-cyan-300')
+      if (event.text || event.code) {
+        const key = feedbackKey(event)
+        addLine(key ? t(key) : event.text || '', 'text-cyan-300')
       }
       break
 
@@ -546,7 +572,10 @@ const handleEvent = (event: {
 
     case 'error':
       status.value = 'error'
-      errorMessage.value = event.error || 'Unknown error'
+      {
+        const key = feedbackKey(event)
+        errorMessage.value = key ? t(key) : event.error || 'Unknown error'
+      }
       if (streamingContent.value) {
         addLine(streamingContent.value, 'text-green-300')
         streamingContent.value = ''

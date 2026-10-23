@@ -33,6 +33,12 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	body []byte,
 	parsed *ParsedRequest,
 ) (*ForwardResult, error) {
+	if account != nil && account.Platform == PlatformKiro {
+		if s.kiroGatewayService == nil {
+			return nil, fmt.Errorf("kiro gateway is not configured")
+		}
+		return s.kiroGatewayService.Forward(ctx, c, account, body, APIProtocolChatCompletions)
+	}
 	startTime := time.Now()
 
 	// 1. Parse Chat Completions request

@@ -119,6 +119,46 @@ describe('AccountTestModal', () => {
     vi.restoreAllMocks()
   })
 
+  it('automatically fetches Kiro models and retries an empty catalog', async () => {
+    getAvailableModels.mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: 'claude-sonnet-4.5', display_name: 'Claude Sonnet 4.5' }, { id: 'minimax-m2.5', display_name: 'MiniMax M2.5' }])
+    const wrapper = mountModal({ id: 9, platform: 'kiro', name: 'Kiro', type: 'oauth', status: 'active' })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="account-models-error"]').text()).toContain('noModelsFound')
+    await wrapper.get('[data-testid="refresh-account-models"]').trigger('click')
+    await flushPromises()
+    expect((wrapper.vm as any).selectedModelId).toBe('minimax-m2.5')
+    expect(wrapper.find('[data-testid="account-models-error"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('enforces Kiro cooldown and does not announce a connection on HTTP rejection', async () => {
+    getAvailableModels.mockResolvedValue([{ id: 'claude-haiku-4.5', display_name: 'Haiku' }])
+    const wrapper = mountModal({ id: 9, platform: 'kiro', name: 'Kiro', type: 'oauth', status: 'active' })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    vi.useFakeTimers()
+    try {
+      global.fetch = vi.fn().mockResolvedValue(createStreamResponse([
+        'data: {"type":"status","code":"kiro_connecting","text":"waiting"}\n\n',
+        'data: {"type":"error","code":"kiro_throttled","error":"fallback","data":{"retry_after_seconds":2}}\n\n'
+      ])) as any
+      await (wrapper.vm as any).startTest()
+      await flushPromises()
+      expect(wrapper.text()).toContain('admin.accounts.kiro.throttled')
+      expect(wrapper.text()).not.toContain('admin.accounts.connectedToApi')
+      expect((wrapper.vm as any).canStartTest).toBe(false)
+      await (wrapper.vm as any).startTest()
+      expect(global.fetch).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(2100)
+      expect((wrapper.vm as any).canStartTest).toBe(true)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
   it('gemini 图片模型测试会携带提示词并渲染图片预览', async () => {
     const wrapper = mountModal()
     await wrapper.setProps({ show: true })

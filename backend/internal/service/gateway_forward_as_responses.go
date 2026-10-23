@@ -35,6 +35,12 @@ func (s *GatewayService) ForwardAsResponses(
 	body []byte,
 	parsed *ParsedRequest,
 ) (*ForwardResult, error) {
+	if account != nil && account.Platform == PlatformKiro {
+		if s.kiroGatewayService == nil {
+			return nil, fmt.Errorf("kiro gateway is not configured")
+		}
+		return s.kiroGatewayService.Forward(ctx, c, account, body, APIProtocolResponses)
+	}
 	startTime := time.Now()
 
 	normalizedBody, normalized, err := normalizeOpenAIResponsesLegacyIngressWithConfig(s.cfg, body)

@@ -1589,7 +1589,16 @@ func (r *accountRepository) SetGrokOAuthErrorIfCredentialsUnchanged(
 // proxy still match the fresh snapshot used by the upstream refresh call. The
 // scheduler outbox insert is part of the same PostgreSQL statement, so a
 // durable invalidation failure rolls the credential update back as well.
-func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
+func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(ctx context.Context, id int64, expected map[string]any, proxyID *int64, credentials map[string]any) (bool, error) {
+	return r.updateOAuthCredentialsIfUnchanged(service.PlatformGrok, ctx, id, expected, proxyID, credentials)
+}
+
+func (r *accountRepository) UpdateKiroOAuthCredentialsIfUnchanged(ctx context.Context, id int64, expected map[string]any, proxyID *int64, credentials map[string]any) (bool, error) {
+	return r.updateOAuthCredentialsIfUnchanged(service.PlatformKiro, ctx, id, expected, proxyID, credentials)
+}
+
+func (r *accountRepository) updateOAuthCredentialsIfUnchanged(
+	platform string,
 	ctx context.Context,
 	id int64,
 	expectedCredentials map[string]any,
@@ -1625,7 +1634,7 @@ func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
 	`,
 		string(credentialsJSON),
 		id,
-		service.PlatformGrok,
+		platform,
 		service.AccountTypeOAuth,
 		string(expectedJSON),
 		expectedProxyID,

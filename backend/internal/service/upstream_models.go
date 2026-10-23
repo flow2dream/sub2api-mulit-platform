@@ -235,6 +235,33 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 		if parseErr == nil {
 			catalog.Metadata = directMetadata
 		}
+		if account != nil && account.Platform == PlatformKiro {
+			var native struct {
+				Models []struct {
+					ID          string   `json:"modelId"`
+					Name        string   `json:"modelName"`
+					InputTypes  []string `json:"supportedInputTypes"`
+					TokenLimits *struct {
+						Input  int64 `json:"maxInputTokens"`
+						Output int64 `json:"maxOutputTokens"`
+					} `json:"tokenLimits"`
+				} `json:"models"`
+			}
+			if json.Unmarshal(body, &native) == nil {
+				for _, model := range native.Models {
+					metadata := catalog.Metadata[model.ID]
+					metadata.DisplayName = model.Name
+					metadata.InputModalities = []string{"text"} /* the initial adapter accepts text only */
+					configurableReasoning := false
+					metadata.Reasoning = &configurableReasoning
+					if model.TokenLimits != nil {
+						metadata.ContextWindow = model.TokenLimits.Input
+						metadata.MaxOutputTokens = model.TokenLimits.Output
+					}
+					catalog.Metadata[model.ID] = metadata
+				}
+			}
+		}
 	}
 
 	// Capability enrichment also covers concrete model_mapping targets. Admins may
@@ -266,6 +293,16 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 		}
 	}
 
+	if account != nil && account.Platform == PlatformKiro {
+		for id, metadata := range catalog.Metadata {
+			metadata.InputModalities = []string{"text"}
+			configurableReasoning := false
+			metadata.Reasoning = &configurableReasoning
+			metadata.DefaultReasoningLevel = ""
+			metadata.SupportedReasoningLevels = nil
+			catalog.Metadata[id] = metadata
+		}
+	}
 	completeMetadata := completeUpstreamModelMetadataSubset(capabilityIDs, catalog.Metadata)
 	persistedCapabilities := false
 	if len(completeMetadata) > 0 && account != nil && account.ID > 0 && s.accountRepo != nil {
@@ -740,6 +777,9 @@ func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account
 	if account == nil {
 		return nil, nil, newUpstreamModelSyncConfigError("Account is required", nil)
 	}
+	if account.Platform == PlatformKiro {
+		return s.fetchKiroUpstreamModels(ctx, account)
+	}
 
 	if account.Platform == PlatformAntigravity && account.Type != AccountTypeAPIKey {
 		return s.fetchAntigravityOAuthUpstreamModels(ctx, account)
@@ -903,6 +943,8 @@ func listVertexGeminiPublisherModels(location string, fetchPage func(page int, l
 
 func (s *AccountTestService) buildUpstreamModelsRequest(ctx context.Context, account *Account) (*http.Request, error) {
 	switch {
+	case account.Platform == PlatformKiro:
+		return s.buildKiroModelsRequest(ctx, account)
 	case account.Platform == PlatformAntigravity:
 		return s.buildAntigravityAPIKeyModelsRequest(ctx, account)
 	case account.IsGrok():
